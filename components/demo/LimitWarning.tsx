@@ -5,10 +5,10 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { UPGRADE_MESSAGES } from '@/lib/demo-limits/config';
 
-type LimitType = 'tokenLimit' | 'ocrLimit' | 'featureDisabled';
+type LimitType = 'priceLimit' | 'documentLimit' | 'fileTooLarge' | 'featureDisabled';
 
 interface LimitWarningProps {
-  type: LimitType;
+  type: LimitType | null;
   className?: string;
   onUpgrade?: () => void;
   customMessage?: string;
@@ -20,6 +20,7 @@ export function LimitWarning({
   onUpgrade,
   customMessage,
 }: LimitWarningProps) {
+  if (!type) return null;
   const message = UPGRADE_MESSAGES[type];
 
   return (

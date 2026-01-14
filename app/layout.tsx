@@ -15,7 +15,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Witness & Deposition Prep Demo | Case.dev",
+  title: "Deposition Prep Tools Demo | Case.dev",
   description: "AI-powered witness testimony and deposition preparation tools. Practice cross-examination with intelligent feedback.",
 };
 

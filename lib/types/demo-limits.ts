@@ -1,40 +1,22 @@
 // Types for demo limits tracking and enforcement
 
-export interface TokenUsage {
-  userId: string;
-  sessionId: string;
-  requestTokens: number;
-  sessionTokens: number;
-  dailyTokens: number;
-  lastRequestAt: string; // ISO string
-  dailyResetAt: string; // ISO string
-}
-
-export interface OCRUsage {
-  userId: string;
-  sessionId: string;
-  sessionDocuments: number;
-  sessionPages: number;
-  dailyPages: number;
-  dailyResetAt: string; // ISO string
+export interface SessionStats {
+  documentsUploaded: number;
+  totalStorageUsed: number;
+  sessionPrice: number; // Total cost in USD for this session
+  sessionStartAt: string; // ISO string
+  sessionResetAt: string; // ISO string
 }
 
 export interface DemoLimits {
-  tokens: {
-    perRequest: number;
-    perSession: number;
-    perDayPerUser: number;
+  pricing: {
+    sessionHours: number;
+    sessionPriceLimit: number; // USD
+    pricePerThousandChars: number; // USD per 1000 characters
   };
-  ocr: {
-    maxFileSize: number; // bytes
-    maxPagesPerDocument: number;
+  documents: {
     maxDocumentsPerSession: number;
-    maxPagesPerDay: number;
-  };
-  features: {
-    bulkUpload: boolean;
-    advancedExport: boolean;
-    premiumFeatures: boolean;
+    maxFileSize: number; // bytes
   };
 }
 
@@ -48,19 +30,14 @@ export interface LimitCheckResult {
 }
 
 export interface UsageStats {
-  tokens: {
-    sessionUsed: number;
-    sessionLimit: number;
-    dailyUsed: number;
-    dailyLimit: number;
+  pricing: {
+    sessionUsed: number; // USD
+    sessionLimit: number; // USD
     percentUsed: number;
   };
-  ocr: {
+  documents: {
     documentsUsed: number;
     documentsLimit: number;
-    pagesUsed: number;
-    dailyPagesUsed: number;
-    dailyPagesLimit: number;
     percentUsed: number;
   };
 }

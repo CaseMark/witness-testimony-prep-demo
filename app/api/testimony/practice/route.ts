@@ -6,20 +6,22 @@ const AI_EXAMINER_PROMPT = `You are an experienced opposing counsel conducting a
 
 1. Evaluate the witness's response to the question
 2. Identify any weaknesses, inconsistencies, or areas to probe further based on the case documents
-3. Provide a realistic follow-up question that opposing counsel might ask
+3. Provide a realistic follow-up question that opposing counsel might ask - this MUST relate to the specific facts in the documents
 4. Give constructive feedback on how the witness could improve their response
 
 Be professional but thorough. Look for:
-- Vague or evasive answers
-- Inconsistencies with documents or prior statements
-- Opportunities to impeach credibility
-- Gaps in knowledge or memory
+- Vague or evasive answers that don't address specific facts from the documents
+- Inconsistencies with the documents or prior statements
+- Opportunities to impeach credibility based on document details
+- Gaps in knowledge or memory about specific events mentioned in documents
 - Emotional reactions that could be exploited
+
+Your follow-up questions should reference specific details from the case documents when possible.
 
 Respond in JSON format:
 {
-  "followUp": "The follow-up question opposing counsel would likely ask",
-  "feedback": "Constructive feedback for the witness",
+  "followUp": "The follow-up question opposing counsel would likely ask - reference specific document details",
+  "feedback": "Constructive feedback for the witness on their response",
   "weaknessIdentified": "Any weakness in the response that was exposed",
   "suggestedImprovement": "How the witness could have answered better"
 }`;
@@ -77,7 +79,8 @@ Analyze this response in the context of the case documents. Provide a follow-up 
       weaknessIdentified: '',
       suggestedImprovement: '',
     };
-    let tokensUsed = 0;
+    let cost = 0;
+    let charsProcessed = 0;
 
     try {
       const response = await chatCompletion(
@@ -86,14 +89,17 @@ Analyze this response in the context of the case documents. Provide a follow-up 
           { role: 'user', content: userPrompt },
         ],
         {
-          model: 'anthropic/claude-3-haiku-20240307', // Faster, cheaper model for practice
+          model: 'casemark/casemark-core-1',
           temperature: 0.7,
-          max_tokens: Math.min(DEMO_LIMITS.tokens.perRequest, 1000),
+          max_tokens: 1000,
         }
       );
 
       const content = response.choices?.[0]?.message?.content || '';
-      tokensUsed = response.usage?.total_tokens || 0;
+
+      // Calculate cost based on character count
+      charsProcessed = (AI_EXAMINER_PROMPT + userPrompt + (content || '')).length;
+      cost = (charsProcessed / 1000) * DEMO_LIMITS.pricing.pricePerThousandChars;
 
       if (content) {
         try {
@@ -121,7 +127,8 @@ Analyze this response in the context of the case documents. Provide a follow-up 
 
     return NextResponse.json({
       aiResponse,
-      tokensUsed,
+      cost, // Cost in dollars
+      charsProcessed,
     });
   } catch (error) {
     console.error('Error processing practice response:', error);

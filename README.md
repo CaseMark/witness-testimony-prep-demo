@@ -1,4 +1,4 @@
-# Witness & Deposition Prep Demo
+# Deposition Prep Tools Demo
 
 **AI-powered witness testimony and deposition preparation tools.**
 
@@ -32,13 +32,12 @@ This demo version includes the following usage limits:
 
 | Limit Type | Value |
 |------------|-------|
-| Tokens per request | 4,000 |
-| Tokens per session | 50,000 |
-| Tokens per day | 100,000 |
-| Max file size | 5 MB |
-| Max pages per document | 10 |
-| Max documents per session | 5 |
-| Max OCR pages per day | 50 |
+| Session duration | 24 hours |
+| Price per session | $5.00 |
+| Max documents per session | 20 |
+| Max file size | 10 MB |
+
+**Pricing**: $0.0005 per 1,000 characters processed (~$0.50 per million characters)
 
 **Disabled Features:**
 - Bulk upload
@@ -78,7 +77,7 @@ Add your Case.dev API key:
 
 ```env
 # .env.local
-CASEDEV_API_KEY=your-api-key-here
+CASE_API_KEY=your-api-key-here
 ```
 
 Get your API key from [Case.dev](https://case.dev).

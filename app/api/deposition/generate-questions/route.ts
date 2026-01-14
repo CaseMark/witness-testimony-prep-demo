@@ -1,325 +1,256 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import { chatCompletion, estimateTokens } from '@/lib/case-dev/api';
+import { chatCompletion } from '@/lib/case-dev/api';
 import { DEMO_LIMITS } from '@/lib/demo-limits/config';
-import type { DepositionQuestion } from '@/lib/types/deposition';
+import type { DepositionQuestion, TestimonyGap, Contradiction } from '@/lib/types/deposition';
 
-const DEPOSITION_QUESTION_PROMPT = `You are an experienced litigator preparing deposition questions for an upcoming deposition. Your goal is to prepare strategic questions that will:
+// Dynamic system prompt
+function getDepositionAnalysisPrompt(deponentName: string): string {
+  return `You are an experienced litigation attorney preparing to take a deposition of ${deponentName}. Analyze the provided case documents and generate strategic deposition questions that are SPECIFIC to the document contents.
 
-1. Establish the foundation for key facts
-2. Expose gaps in the deponent's knowledge
-3. Highlight contradictions between documents and potential testimony
-4. Lock in testimony that can be used at trial
-5. Explore the deponent's credibility and bias
+═══════════════════════════════════════════════════════════════════════════════
+WITNESS IDENTITY - READ THIS CAREFULLY:
+═══════════════════════════════════════════════════════════════════════════════
+THE PERSON YOU ARE QUESTIONING IS: ${deponentName}
+THE PERSON YOU ARE QUESTIONING IS: ${deponentName}
+THE PERSON YOU ARE QUESTIONING IS: ${deponentName}
 
-Based on the provided case documents, generate exactly 20 deposition questions.
+⚠️ CRITICAL WARNING:
+The documents may contain depositions or statements from OTHER people who are NOT ${deponentName}.
+The ONLY person you are questioning is ${deponentName}.
 
-STRUCTURE YOUR 20 QUESTIONS AS FOLLOWS:
-- 5 questions: FOUNDATION - Establish the deponent's role, knowledge base, and document familiarity
-- 5 questions: GAPS - Probe areas where documents suggest incomplete information
-- 5 questions: TIMELINE - Establish specific dates, times, and sequences of events
-- 5 questions: CONTRADICTIONS/IMPEACHMENT - Questions that set up potential impeachment
+When you see testimony from other people:
+- Ask ${deponentName} what THEY know about what those other people said
+- NEVER direct questions to those other people
+═══════════════════════════════════════════════════════════════════════════════
 
-For each question, provide:
-1. The question itself
-2. Topic: The subject matter area
-3. Category: one of "foundation", "gap", "timeline", "contradiction", "impeachment", "follow_up", or "general"
-4. Priority: "high", "medium", or "low"
-5. Rationale: Why this question is important
-6. Document reference: Which document this relates to
-7. Follow-up questions: 2-3 potential follow-ups
+CRITICAL REQUIREMENTS:
+- ALL questions MUST be directed TO ${deponentName} using "you" and "your"
+- ALL questions MUST reference specific facts, dates, names, or details from documents
+- DO NOT include generic questions like "state your name"
+- Every question should probe specific document content
 
-Return your response as a JSON array with exactly 20 questions in this format:
-[
-  {
-    "question": "The deposition question...",
-    "topic": "Subject area",
-    "category": "foundation|gap|timeline|contradiction|impeachment|follow_up|general",
+ANALYSIS OBJECTIVES:
+1. Identify GAPS - missing or incomplete information in documents
+2. Detect CONTRADICTIONS - inconsistencies between documents
+3. Extract KEY THEMES - major topics from documents
+4. Build TIMELINE - chronological events from documents
+5. Generate STRATEGIC QUESTIONS - reference specific document content
+
+Return JSON object with this structure:
+{
+  "gaps": [{
+    "description": "Gap description with document references",
+    "documentReferences": ["Document names"],
+    "severity": "minor|moderate|significant",
+    "suggestedQuestions": ["Question 1", "Question 2"]
+  }],
+  "contradictions": [{
+    "description": "Contradiction with quotes",
+    "source1": {"document": "Name", "excerpt": "Quote"},
+    "source2": {"document": "Name", "excerpt": "Quote"},
+    "severity": "minor|moderate|significant",
+    "suggestedQuestions": ["Question"]
+  }],
+  "analysis": {
+    "keyThemes": ["Theme 1", "Theme 2"],
+    "timelineEvents": [{"date": "Date", "event": "Event", "source": "Doc"}],
+    "witnesses": ["Names mentioned"],
+    "keyExhibits": ["Important exhibits"]
+  },
+  "questions": [{
+    "question": "Question referencing specific document content directed to ${deponentName}",
+    "topic": "Topic area",
+    "category": "gap|contradiction|timeline|foundation|impeachment|follow_up|general",
     "priority": "high|medium|low",
-    "rationale": "Why this question is strategically important",
-    "documentReference": "Which document this relates to",
+    "documentReference": "Document name",
+    "rationale": "Why this matters",
     "followUpQuestions": ["Follow-up 1", "Follow-up 2"]
-  }
-]
-
-IMPORTANT: Return ONLY the JSON array. No markdown, no code blocks.`;
-
-function parseJSONResponse(content: string): unknown[] | null {
-  // Strategy 1: Direct parse
-  try {
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {
-    // Continue
-  }
-
-  // Strategy 2: Clean and parse
-  try {
-    let cleaned = content.trim();
-    cleaned = cleaned.replace(/^\uFEFF/, '');
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '');
-    cleaned = cleaned.replace(/\n?```\s*$/i, '');
-    cleaned = cleaned.trim();
-
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {
-    // Continue
-  }
-
-  // Strategy 3: Extract JSON array
-  try {
-    const arrayMatch = content.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (arrayMatch) {
-      const parsed = JSON.parse(arrayMatch[0]);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {
-    // Continue
-  }
-
-  // Strategy 4: Find brackets
-  try {
-    const firstBracket = content.indexOf('[');
-    const lastBracket = content.lastIndexOf(']');
-    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-      const jsonStr = content.substring(firstBracket, lastBracket + 1);
-      const parsed = JSON.parse(jsonStr);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {
-    // Continue
-  }
-
-  return null;
+  }]
 }
 
-function generateFallbackQuestions(deponentName: string, documents: Array<{ name: string }>): DepositionQuestion[] {
-  const docNames = documents.map(d => d.name).join(', ') || 'the documents';
+IMPORTANT: Return ONLY the JSON object. No markdown, no code blocks.`;
+}
 
-  return [
-    // Foundation questions (5)
+// Extract document details
+function extractDocumentDetails(documents: Array<{ name: string; content?: string; type?: string }>) {
+  const names = new Set<string>();
+  const dates = new Set<string>();
+  const amounts = new Set<string>();
+  const locations = new Set<string>();
+  const keyPhrases = new Set<string>();
+  const documentSummaries: Array<{ name: string; summary: string }> = [];
+
+  for (const doc of documents) {
+    const content = doc.content || '';
+    
+    // Extract names (capitalized words, 2-3 words)
+    const nameMatches = content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b/g) || [];
+    nameMatches.slice(0, 5).forEach(n => names.add(n));
+    
+    // Extract dates
+    const dateMatches = content.match(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b/gi) || [];
+    dateMatches.slice(0, 5).forEach(d => dates.add(d));
+    
+    // Extract monetary amounts
+    const amountMatches = content.match(/\$[\d,]+(?:\.\d{2})?|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})?\s*(?:dollars?|USD)?\b/gi) || [];
+    amountMatches.slice(0, 3).forEach(a => amounts.add(a));
+    
+    // Extract locations
+    const locationMatches = content.match(/\b(?:in|at|from|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z]{2})?)\b/g) || [];
+    locationMatches.slice(0, 3).forEach(l => locations.add(l.replace(/^(?:in|at|from|to)\s+/i, '')));
+    
+    // Extract key phrases
+    const phraseMatches = content.match(/"[^"]{10,100}"|'[^']{10,100}'|stated that [^.]{10,80}|claimed that [^.]{10,80}|testified that [^.]{10,80}/gi) || [];
+    phraseMatches.slice(0, 3).forEach(p => keyPhrases.add(p));
+    
+    // Create document summary
+    const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 20).slice(0, 2);
+    if (sentences.length > 0) {
+      documentSummaries.push({
+        name: doc.name,
+        summary: sentences.join('. ').trim().substring(0, 200)
+      });
+    }
+  }
+
+  return {
+    names: Array.from(names),
+    dates: Array.from(dates),
+    amounts: Array.from(amounts),
+    locations: Array.from(locations),
+    keyPhrases: Array.from(keyPhrases),
+    documentSummaries
+  };
+}
+
+// Generate fallback with document analysis
+function generateFallbackAnalysis(deponentName: string, documents: Array<{ name: string; content?: string; type?: string }>) {
+  const docNames = documents.map(d => d.name);
+  const details = extractDocumentDetails(documents);
+  
+  const gaps: TestimonyGap[] = [];
+  const contradictions: Contradiction[] = [];
+  const questions: DepositionQuestion[] = [];
+
+  // Generate document-specific gaps
+  if (details.dates.length > 0) {
+    gaps.push({
+      id: uuidv4(),
+      description: `Timeline details around ${details.dates[0]} need clarification - documents reference this date but lack context`,
+      documentReferences: docNames.slice(0, 2),
+      severity: 'moderate',
+      suggestedQuestions: [
+        `What specifically happened on ${details.dates[0]}?`,
+        `Who else was involved in the events of ${details.dates[0]}?`
+      ],
+    });
+  }
+
+  if (details.names.length > 1) {
+    gaps.push({
+      id: uuidv4(),
+      description: `The relationship between ${details.names[0]} and ${details.names[1]} is not fully documented`,
+      documentReferences: docNames.slice(0, 1),
+      severity: 'significant',
+      suggestedQuestions: [
+        `What was the nature of your communications with ${details.names[1]}?`,
+        `How often did you interact with ${details.names[1]}?`
+      ],
+    });
+  }
+
+  // Generate document-specific questions
+  details.dates.forEach((date, index) => {
+    if (index < 3) {
+      questions.push({
+        id: uuidv4(),
+        question: `The documents reference ${date}. Walk me through exactly what happened on that date and your involvement.`,
+        topic: 'Timeline of Events',
+        category: 'timeline',
+        priority: index === 0 ? 'high' : 'medium',
+        documentReference: docNames[0] || 'Documents',
+        rationale: `This date appears in the documents and establishing specific events is critical.`,
+        followUpQuestions: [
+          `Who else was present on ${date}?`,
+          `What communications occurred before and after ${date}?`
+        ],
+      });
+    }
+  });
+
+  // Add questions for key people mentioned
+  details.names.forEach((name, index) => {
+    if (index < 3) {
+      questions.push({
+        id: uuidv4(),
+        question: `${name} is mentioned in the documents. Describe your relationship and interactions with ${name}.`,
+        topic: 'Relationships and Communications',
+        category: 'foundation',
+        priority: 'medium',
+        documentReference: docNames[0] || 'Documents',
+        rationale: `Understanding relationships with key individuals is essential.`,
+        followUpQuestions: [
+          `How often did you communicate with ${name}?`,
+          `What was the nature of your professional relationship?`
+        ],
+      });
+    }
+  });
+
+  // Add general deposition questions
+  const generalQuestions: DepositionQuestion[] = [
     {
       id: uuidv4(),
-      question: `Please state your full name for the record.`,
-      topic: 'Identification',
+      question: `You've reviewed documents for this case. Walk me through your role and responsibilities during the time period covered by these documents.`,
+      topic: 'Role and Responsibilities',
       category: 'foundation',
       priority: 'high',
-      rationale: 'Establishes identity and begins the deposition formally',
       documentReference: 'General',
-      followUpQuestions: ['Have you ever used any other names?', 'Please spell your name for the record.'],
+      rationale: `Establishes foundation for testimony and scope of knowledge.`,
+      followUpQuestions: [
+        `What were your specific duties?`,
+        `Who did you report to?`
+      ],
     },
     {
       id: uuidv4(),
-      question: `What is your current position and how long have you held it?`,
-      topic: 'Employment',
-      category: 'foundation',
-      priority: 'high',
-      rationale: 'Establishes professional context and credibility',
-      documentReference: 'General',
-      followUpQuestions: ['What are your primary responsibilities?', 'Who do you report to?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Have you reviewed any documents in preparation for this deposition?`,
-      topic: 'Preparation',
-      category: 'foundation',
-      priority: 'medium',
-      rationale: 'Establishes what the deponent has seen and memory refreshment',
-      documentReference: docNames,
-      followUpQuestions: ['Which documents did you review?', 'When did you review them?', 'Who provided them to you?'],
-    },
-    {
-      id: uuidv4(),
-      question: `What is your understanding of why you are being deposed today?`,
-      topic: 'Knowledge',
-      category: 'foundation',
-      priority: 'medium',
-      rationale: 'Reveals deponent\'s understanding of their role in the matter',
-      documentReference: 'General',
-      followUpQuestions: ['What do you know about this case?', 'How did you become involved?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Are you familiar with the documents that have been marked as exhibits in this case?`,
-      topic: 'Document Familiarity',
-      category: 'foundation',
-      priority: 'high',
-      rationale: 'Sets up document authentication and knowledge',
-      documentReference: docNames,
-      followUpQuestions: ['Which of these documents have you seen before?', 'Did you create any of these documents?'],
-    },
-    // Gap questions (5)
-    {
-      id: uuidv4(),
-      question: `The documents suggest there was a gap in communications during a key period. What happened during that time?`,
-      topic: 'Communication Gaps',
-      category: 'gap',
-      priority: 'high',
-      rationale: 'Probes unexplained periods in the documentary record',
-      documentReference: docNames,
-      followUpQuestions: ['Were there verbal communications not reflected in writing?', 'Why wasn\'t this documented?'],
-    },
-    {
-      id: uuidv4(),
-      question: `I notice certain individuals are mentioned but never directly communicated with in writing. Who else was involved that we don\'t see in these documents?`,
-      topic: 'Missing Parties',
-      category: 'gap',
-      priority: 'medium',
-      rationale: 'Identifies potential witnesses or decision-makers not in documents',
-      documentReference: docNames,
-      followUpQuestions: ['What was their role?', 'Do you have any communications with them?'],
-    },
-    {
-      id: uuidv4(),
-      question: `The documents don\'t explain how a certain decision was reached. Can you walk me through that decision-making process?`,
-      topic: 'Decision Making',
-      category: 'gap',
-      priority: 'high',
-      rationale: 'Fills in gaps about how key decisions were made',
-      documentReference: docNames,
-      followUpQuestions: ['Who was involved?', 'Were there meetings about this?', 'What factors were considered?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Are there any documents relevant to this matter that have not been produced?`,
-      topic: 'Document Production',
-      category: 'gap',
-      priority: 'medium',
-      rationale: 'Identifies potentially missing evidence',
-      documentReference: docNames,
-      followUpQuestions: ['What happened to those documents?', 'Who would have them?'],
-    },
-    {
-      id: uuidv4(),
-      question: `What information did you have access to that isn\'t reflected in these documents?`,
-      topic: 'Undocumented Knowledge',
-      category: 'gap',
-      priority: 'medium',
-      rationale: 'Explores knowledge beyond the documentary record',
-      documentReference: docNames,
-      followUpQuestions: ['How did you obtain that information?', 'Did you share it with anyone?'],
-    },
-    // Timeline questions (5)
-    {
-      id: uuidv4(),
-      question: `When did you first become aware of the issues central to this case?`,
-      topic: 'First Knowledge',
-      category: 'timeline',
-      priority: 'high',
-      rationale: 'Establishes when key knowledge was acquired',
-      documentReference: docNames,
-      followUpQuestions: ['How did you learn about it?', 'Who told you?', 'What did you do after learning this?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Can you walk me through the sequence of events leading up to the key incident?`,
-      topic: 'Event Sequence',
-      category: 'timeline',
-      priority: 'high',
-      rationale: 'Locks in a specific timeline that can be compared to documents',
-      documentReference: docNames,
-      followUpQuestions: ['What happened next?', 'How much time passed between these events?'],
-    },
-    {
-      id: uuidv4(),
-      question: `The documents show activity on specific dates. What was happening between those dates?`,
-      topic: 'Interim Period',
-      category: 'timeline',
-      priority: 'medium',
-      rationale: 'Fills in gaps in the documented timeline',
-      documentReference: docNames,
-      followUpQuestions: ['Were there any significant events during this time?', 'Who else would know?'],
-    },
-    {
-      id: uuidv4(),
-      question: `When did the situation first change from normal operations?`,
-      topic: 'Deviation Point',
-      category: 'timeline',
-      priority: 'medium',
-      rationale: 'Identifies when problems began',
-      documentReference: docNames,
-      followUpQuestions: ['What changed?', 'Why do you think it changed at that time?'],
-    },
-    {
-      id: uuidv4(),
-      question: `What is the latest date you have any involvement or knowledge of this matter?`,
-      topic: 'Involvement End',
-      category: 'timeline',
-      priority: 'medium',
-      rationale: 'Defines the scope of the deponent\'s knowledge',
-      documentReference: 'General',
-      followUpQuestions: ['What ended your involvement?', 'Who took over after you?'],
-    },
-    // Contradiction/Impeachment questions (5)
-    {
-      id: uuidv4(),
-      question: `Your earlier statement indicates X, but this document suggests Y. Can you explain this discrepancy?`,
-      topic: 'Document Contradiction',
-      category: 'contradiction',
-      priority: 'high',
-      rationale: 'Sets up potential impeachment with documentary evidence',
-      documentReference: docNames,
-      followUpQuestions: ['Which is accurate?', 'Were you mistaken earlier?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Do you have any personal interest in the outcome of this case?`,
+      question: `Do you have any personal or financial interest in the outcome of this case?`,
       topic: 'Bias',
       category: 'impeachment',
       priority: 'high',
-      rationale: 'Establishes potential bias or motive',
       documentReference: 'General',
-      followUpQuestions: ['Financial interest?', 'Personal relationships with the parties?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Have you discussed your testimony with anyone other than counsel?`,
-      topic: 'Witness Preparation',
-      category: 'impeachment',
-      priority: 'medium',
-      rationale: 'Explores potential influence on testimony',
-      documentReference: 'General',
-      followUpQuestions: ['Who did you discuss it with?', 'What did you discuss?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Have you ever been disciplined or had your credibility questioned in a professional context?`,
-      topic: 'Credibility',
-      category: 'impeachment',
-      priority: 'medium',
-      rationale: 'Explores prior credibility issues',
-      documentReference: 'General',
-      followUpQuestions: ['What were the circumstances?', 'What was the outcome?'],
-    },
-    {
-      id: uuidv4(),
-      question: `Looking at this document, is this your signature/writing?`,
-      topic: 'Authentication',
-      category: 'foundation',
-      priority: 'high',
-      rationale: 'Authenticates documents and locks deponent into their contents',
-      documentReference: docNames,
-      followUpQuestions: ['When did you sign this?', 'Did you read it before signing?', 'Do you stand by what it says?'],
-    },
+      rationale: `Establishes potential bias.`,
+      followUpQuestions: [
+        `Do you stand to gain financially?`,
+        `What is your current relationship with the parties?`
+      ],
+    }
   ];
+
+  questions.push(...generalQuestions);
+
+  const analysis = {
+    keyThemes: details.names.length > 0 
+      ? [`Involvement of ${details.names.slice(0, 2).join(' and ')}`, 'Timeline of Events', 'Document Authenticity']
+      : ['Timeline of Events', 'Document Authenticity', 'Communications'],
+    timelineEvents: details.dates.map((date, i) => ({
+      date,
+      event: `Event referenced in documents`,
+      source: docNames[i % docNames.length] || 'Documents'
+    })),
+    witnesses: details.names.slice(0, 5),
+    keyExhibits: docNames.slice(0, 5),
+  };
+
+  return { gaps, contradictions, questions, analysis };
 }
 
-function validateCategory(category: string): DepositionQuestion['category'] {
-  const valid = ['gap', 'contradiction', 'timeline', 'foundation', 'impeachment', 'follow_up', 'general'];
-  return valid.includes(category) ? category as DepositionQuestion['category'] : 'general';
-}
-
-function validatePriority(priority: string): DepositionQuestion['priority'] {
-  const valid = ['high', 'medium', 'low'];
-  return valid.includes(priority) ? priority as DepositionQuestion['priority'] : 'medium';
-}
-
-// POST /api/deposition/generate-questions - Generate deposition questions
+// POST /api/deposition/generate-questions
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { deponentName, caseName, documents, focusAreas } = body;
+    const { deponentName, caseName, documents } = body;
 
     if (!deponentName || !caseName) {
       return NextResponse.json(
@@ -330,108 +261,137 @@ export async function POST(request: NextRequest) {
 
     if (!documents || documents.length === 0) {
       return NextResponse.json(
-        { error: 'No documents provided. Please upload case materials first.' },
+        { error: 'No documents provided' },
         { status: 400 }
       );
     }
 
-    // Build document context
+    // Prepare document context
     const documentContext = documents
       .map((doc: { name: string; content?: string; type?: string }) => {
         const content = doc.content || '[Content not available]';
-        const docType = doc.type ? ` (${doc.type})` : '';
-        return `=== DOCUMENT: ${doc.name}${docType} ===\n${content}\n=== END DOCUMENT ===`;
+        const typeLabel = (doc.type || 'DOCUMENT').replace('_', ' ').toUpperCase();
+        return `=== ${typeLabel}: ${doc.name} ===\n${content}\n=== END DOCUMENT ===`;
       })
       .join('\n\n');
 
     const userPrompt = `Case: ${caseName}
-Deponent: ${deponentName}
-${focusAreas?.length ? `Focus Areas: ${focusAreas.join(', ')}` : ''}
+Deponent (Witness Name): ${deponentName}
 
 DOCUMENTS TO ANALYZE:
 ${documentContext}
 
-Generate exactly 20 deposition questions for ${deponentName}.
-Return ONLY a valid JSON array. No markdown formatting.`;
+Based on these documents, perform comprehensive analysis and generate 15-20 strategic deposition questions.
 
-    // Check estimated tokens
-    const estimatedInputTokens = estimateTokens(DEPOSITION_QUESTION_PROMPT + userPrompt);
+CRITICAL: ALL questions MUST be directed TO ${deponentName}. Use "you" and "your".
+Every question MUST reference specific facts, dates, names, or details from the documents above.
 
-    // Truncate if needed
-    if (estimatedInputTokens > DEMO_LIMITS.tokens.perRequest * 0.7) {
-      // Truncate documents to fit
-      const maxChars = (DEMO_LIMITS.tokens.perRequest * 0.5) * 4;
-      const charsPerDoc = Math.floor(maxChars / documents.length);
+CRITICAL: Return ONLY a valid JSON object. No markdown formatting, no code blocks.`;
 
-      const truncatedDocs = documents.map((doc: { name: string; content?: string; type?: string }) => ({
-        ...doc,
-        content: doc.content ? doc.content.slice(0, charsPerDoc) + '... [truncated for demo]' : doc.content,
-      }));
-
-      body.documents = truncatedDocs;
-    }
-
-    let questions: DepositionQuestion[] = [];
+    let result: {
+      gaps: TestimonyGap[];
+      contradictions: Contradiction[];
+      questions: DepositionQuestion[];
+      analysis: {
+        keyThemes: string[];
+        timelineEvents: Array<{ date: string; event: string; source: string }>;
+        witnesses: string[];
+        keyExhibits: string[];
+      };
+    };
     let usedFallback = false;
-    let tokensUsed = 0;
+    let cost = 0;
+    let charsProcessed = 0;
 
     try {
       const response = await chatCompletion(
         [
-          { role: 'system', content: DEPOSITION_QUESTION_PROMPT },
+          { role: 'system', content: getDepositionAnalysisPrompt(deponentName) },
           { role: 'user', content: userPrompt },
         ],
         {
           model: 'casemark/casemark-core-1',
           temperature: 0.7,
-          max_tokens: Math.min(DEMO_LIMITS.tokens.perRequest, 8000),
+          max_tokens: 8000,
         }
       );
 
       const content = response.choices?.[0]?.message?.content || '';
-      tokensUsed = response.usage?.total_tokens || 0;
+
+      // Calculate cost
+      charsProcessed = (getDepositionAnalysisPrompt(deponentName) + userPrompt + content).length;
+      cost = (charsProcessed / 1000) * DEMO_LIMITS.pricing.pricePerThousandChars;
 
       if (content) {
-        const questionsData = parseJSONResponse(content);
+        try {
+          // Try to parse JSON response
+          let cleaned = content.trim();
+          cleaned = cleaned.replace(/^\uFEFF/, '');
+          cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '');
+          cleaned = cleaned.replace(/\n?```\s*$/i, '');
+          cleaned = cleaned.trim();
 
-        if (questionsData && questionsData.length > 0) {
-          questions = questionsData.slice(0, 20).map((q: unknown) => {
-            const qObj = q as Record<string, unknown>;
-            return {
-              id: uuidv4(),
-              question: String(qObj.question || 'Question not available'),
-              topic: String(qObj.topic || 'General'),
-              category: validateCategory(String(qObj.category || 'general')),
-              priority: validatePriority(String(qObj.priority || 'medium')),
-              rationale: qObj.rationale ? String(qObj.rationale) : undefined,
-              documentReference: qObj.documentReference ? String(qObj.documentReference) : undefined,
-              followUpQuestions: Array.isArray(qObj.followUpQuestions)
-                ? qObj.followUpQuestions.map((f: unknown) => String(f))
-                : undefined,
-            };
-          });
+          const parsed = JSON.parse(cleaned);
+          
+          // Add IDs to questions, gaps, contradictions
+          if (parsed.questions) {
+            parsed.questions = parsed.questions.map((q: any) => ({
+              ...q,
+              id: q.id || uuidv4()
+            }));
+          }
+          if (parsed.gaps) {
+            parsed.gaps = parsed.gaps.map((g: any) => ({
+              ...g,
+              id: g.id || uuidv4()
+            }));
+          }
+          if (parsed.contradictions) {
+            parsed.contradictions = parsed.contradictions.map((c: any) => ({
+              ...c,
+              id: c.id || uuidv4()
+            }));
+          }
+
+          result = parsed;
+        } catch (parseError) {
+          console.error('Failed to parse LLM response, using fallback');
+          result = generateFallbackAnalysis(deponentName, documents);
+          usedFallback = true;
         }
+      } else {
+        result = generateFallbackAnalysis(deponentName, documents);
+        usedFallback = true;
       }
     } catch (apiError) {
       console.error('LLM API error:', apiError);
+      result = generateFallbackAnalysis(deponentName, documents);
       usedFallback = true;
     }
 
-    // Use fallback if no questions generated
-    if (questions.length === 0) {
-      questions = generateFallbackQuestions(deponentName, documents);
-      usedFallback = true;
+    // Ensure result has all required fields
+    if (!result.gaps) result.gaps = [];
+    if (!result.contradictions) result.contradictions = [];
+    if (!result.questions) result.questions = [];
+    if (!result.analysis) {
+      result.analysis = {
+        keyThemes: [],
+        timelineEvents: [],
+        witnesses: [],
+        keyExhibits: []
+      };
     }
 
     return NextResponse.json({
-      questions,
-      tokensUsed,
+      ...result,
+      cost,
+      charsProcessed,
       usedFallback,
     });
   } catch (error) {
-    console.error('Error generating questions:', error);
+    console.error('Error generating deposition analysis:', error);
     return NextResponse.json(
-      { error: 'Failed to generate questions' },
+      { error: 'Failed to generate analysis' },
       { status: 500 }
     );
   }

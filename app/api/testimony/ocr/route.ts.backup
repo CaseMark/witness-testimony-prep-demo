@@ -1,0 +1,114 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { processDocumentOCR } from '@/lib/case-dev/api';
+import { DEMO_LIMITS } from '@/lib/demo-limits/config';
+import { calculateCost } from '@/lib/storage/usage-storage';
+
+// POST /api/testimony/ocr - Process a document with OCR
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData();
+    const file = formData.get('file') as File | null;
+
+    if (!file) {
+      return NextResponse.json(
+        { error: 'No file provided' },
+        { status: 400 }
+      );
+    }
+
+    // Check file size limit
+    if (file.size > DEMO_LIMITS.documents.maxFileSize) {
+      const maxSizeMB = (DEMO_LIMITS.documents.maxFileSize / (1024 * 1024)).toFixed(0);
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+      return NextResponse.json(
+        {
+          error: `File size (${fileSizeMB}MB) exceeds demo limit of ${maxSizeMB}MB`,
+          limitReached: true,
+          limitType: 'fileSize',
+        },
+        { status: 400 }
+      );
+    }
+
+    // Check file type
+    const allowedTypes = [
+      'application/pdf',
+      'image/png',
+      'image/jpeg',
+      'image/tiff',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+    const allowedExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.doc', '.docx'];
+
+    const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
+    const isAllowedType = allowedTypes.includes(file.type) || allowedExtensions.includes(fileExtension);
+
+    if (!isAllowedType) {
+      return NextResponse.json(
+        { error: 'Invalid file type. Allowed: PDF, PNG, JPG, TIFF, DOC, DOCX' },
+        { status: 400 }
+      );
+    }
+
+    // For text files, read directly without OCR
+    if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
+      const text = await file.text();
+      const cost = calculateCost(text.length);
+      return NextResponse.json({
+        text,
+        pageCount: 1,
+        status: 'completed',
+        ocrUsed: false,
+        cost,
+        charsProcessed: text.length,
+      });
+    }
+
+    // Process with OCR
+    try {
+      const result = await processDocumentOCR(file, file.name);
+
+      // Combine all page text
+      let fullText = '';
+      if (result.pages && Array.isArray(result.pages)) {
+        fullText = result.pages.map(p => p.text).join('\n\n--- Page Break ---\n\n');
+      } else if (result.text) {
+        fullText = result.text;
+      }
+
+      const pageCount = result.page_count || result.pages?.length || 1;
+      const cost = calculateCost(fullText.length);
+
+      return NextResponse.json({
+        text: fullText,
+        pageCount,
+        status: 'completed',
+        ocrUsed: true,
+        cost,
+        charsProcessed: fullText.length,
+      });
+    } catch (ocrError) {
+      console.error('OCR processing error:', ocrError);
+
+      // Fallback: return placeholder for non-text documents
+      const fallbackText = `[Document: ${file.name}]\n\nOCR processing is currently unavailable. Please upload a text file (.txt) for full content analysis, or try again later.`;
+      const cost = calculateCost(fallbackText.length);
+      return NextResponse.json({
+        text: fallbackText,
+        pageCount: 1,
+        status: 'fallback',
+        ocrUsed: false,
+        error: 'OCR service temporarily unavailable',
+        cost,
+        charsProcessed: fallbackText.length,
+      });
+    }
+  } catch (error) {
+    console.error('Error processing document:', error);
+    return NextResponse.json(
+      { error: 'Failed to process document' },
+      { status: 500 }
+    );
+  }
+}

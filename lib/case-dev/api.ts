@@ -5,9 +5,9 @@ const CASE_API_BASE = 'https://api.case.dev';
 
 // Get API key from environment
 function getApiKey(): string {
-  const apiKey = process.env.CASEDEV_API_KEY;
+  const apiKey = process.env.CASE_API_KEY;
   if (!apiKey) {
-    throw new Error('CASEDEV_API_KEY environment variable is not set');
+    throw new Error('CASE_API_KEY environment variable is not set');
   }
   return apiKey;
 }
@@ -265,5 +265,5 @@ export function estimateTokens(text: string): number {
  * Check if API key is configured
  */
 export function isApiConfigured(): boolean {
-  return !!process.env.CASEDEV_API_KEY;
+  return !!process.env.CASE_API_KEY;
 }

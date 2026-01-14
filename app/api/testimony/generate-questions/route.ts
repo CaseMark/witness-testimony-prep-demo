@@ -12,6 +12,8 @@ function getQuestionGenerationPrompt(witnessName: string): string {
 WITNESS IDENTITY - READ THIS CAREFULLY:
 ═══════════════════════════════════════════════════════════════════════════════
 THE WITNESS YOU ARE PREPARING QUESTIONS FOR IS: ${witnessName}
+THE WITNESS YOU ARE PREPARING QUESTIONS FOR IS: ${witnessName}
+THE WITNESS YOU ARE PREPARING QUESTIONS FOR IS: ${witnessName}
 
 ⚠️ CRITICAL WARNING ABOUT DOCUMENTS:
 The documents you will analyze may contain depositions, testimony, or statements from OTHER people who are NOT ${witnessName}. These are EVIDENCE documents about the case.
@@ -21,12 +23,20 @@ The ONLY witness you are preparing questions for is ${witnessName}.
 When you see testimony or depositions from other people in the documents:
 - These are EVIDENCE that ${witnessName} may be asked about
 - Prepare questions asking ${witnessName} what THEY know about what those other people said
+- Prepare questions asking ${witnessName} if THEY agree or disagree with what others testified
 - NEVER prepare questions directed at those other people - they are not the witness
 ═══════════════════════════════════════════════════════════════════════════════
 
+CRITICAL REQUIREMENTS:
+1. ALL questions (main questions AND follow-up questions) MUST be directed TO ${witnessName} - ${witnessName} is the ONLY person being questioned
+2. Do NOT start every question with "${witnessName}" - this is repetitive. Use natural questioning style with "you" and "your"
+3. When documents mention other people (anyone who is NOT ${witnessName}), ask ${witnessName} about THEIR knowledge of those people - do NOT ask questions as if those other people are the witness
+4. If documents contain depositions or testimony from other witnesses, prepare questions asking ${witnessName} about what THEY know regarding that testimony - do NOT prepare questions for those other witnesses
+5. ALL follow-up questions must also be directed to ${witnessName} about ${witnessName}'s knowledge, actions, or observations - NEVER direct follow-up questions to other people mentioned in documents
+
 STRUCTURE YOUR 20 QUESTIONS AS FOLLOWS:
-- 15 questions: DOCUMENT-SPECIFIC - Reference specific facts, names, dates from the documents.
-- 5 questions: GENERAL CROSS-EXAMINATION - Standard questions testing credibility, memory, bias.
+- 15 questions: DOCUMENT-SPECIFIC - These MUST be specifically based on the content of the documents provided. Reference specific facts, names, dates, times, locations, and details from the documents.
+- 5 questions: GENERAL CROSS-EXAMINATION - These are standard cross-examination questions that opposing counsel commonly asks ANY witness, regardless of the case specifics. These test general credibility, memory, bias, and preparation. Mark these with category "general".
 
 For each question, provide:
 1. The question itself - directed to ${witnessName} using "you" and "your"
@@ -34,8 +44,27 @@ For each question, provide:
 3. Difficulty: "easy", "medium", or "hard"
 4. A suggested approach for how ${witnessName} should handle this question
 5. Any weak points this question might expose
-6. 2-3 potential follow-up questions
-7. A reference to which document this relates to
+6. 2-3 potential follow-up questions - these MUST also be directed to ${witnessName} (using "you/your")
+7. A reference to which document this relates to (use "General Cross-Examination" for the 5 general questions)
+
+FOR DOCUMENT-SPECIFIC QUESTIONS (15), focus on:
+- Specific timeline details mentioned in the documents
+- Credibility challenges based on what ${witnessName} claims to have seen/heard/done
+- Potential inconsistencies in the narrative
+- Foundation questions about how ${witnessName} knows specific facts
+- Impeachment opportunities based on statements in the documents
+- Specific names, dates, times, and locations mentioned
+
+FOR GENERAL QUESTIONS (5 REQUIRED), you MUST include these standard cross-examination questions:
+1. A question about how ${witnessName} prepared for testimony and who they spoke with
+2. A question about compensation or financial interest in the case outcome
+3. A question testing ${witnessName}'s memory and certainty
+4. A question about ${witnessName}'s relationship to the parties
+5. A question about whether ${witnessName} has ever given inaccurate testimony
+
+QUESTION EXAMPLES (good vs bad):
+BAD FOLLOW-UP (asking wrong person): "What did Mr. Smith know about this?"
+GOOD FOLLOW-UP (asking ${witnessName}): "What did Mr. Smith tell you about this?"
 
 Return your response as a JSON array with exactly 20 questions in this format:
 [
@@ -44,13 +73,17 @@ Return your response as a JSON array with exactly 20 questions in this format:
     "category": "timeline|credibility|inconsistency|foundation|impeachment|general",
     "difficulty": "easy|medium|hard",
     "suggestedApproach": "How ${witnessName} should approach answering",
-    "weakPoint": "What vulnerability this exposes",
-    "followUpQuestions": ["Follow-up 1", "Follow-up 2"],
-    "documentReference": "Which document/section this relates to"
+    "weakPoint": "What vulnerability this exposes based on the documents",
+    "followUpQuestions": ["Follow-up question addressed to ${witnessName}", "Another follow-up question addressed to ${witnessName}"],
+    "documentReference": "Which document/section this relates to OR 'General Cross-Examination'"
   }
 ]
 
-IMPORTANT: Return ONLY the JSON array. No markdown, no code blocks.`;
+IMPORTANT:
+- Return ONLY the JSON array. No markdown, no code blocks, no explanatory text.
+- All questions and follow-ups must be directed TO ${witnessName} (the person testifying).
+- You MUST include exactly 5 questions with category "general".
+- Remember: ${witnessName} is the ONLY person being questioned. All questions and follow-ups must be directed to ${witnessName}.`;
 }
 
 // Robust JSON parsing with multiple fallback strategies
@@ -360,35 +393,12 @@ ${documentContext}
 Generate exactly 20 cross-examination questions for the witness ${witnessName}.
 Return ONLY a valid JSON array. No markdown formatting.`;
 
-    // Estimate tokens for limit check
     const systemPrompt = getQuestionGenerationPrompt(witnessName);
-    const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
-    const estimatedOutputTokens = 4000; // Estimated for 20 questions
-
-    // Check token limit
-    const totalEstimatedTokens = estimatedInputTokens + estimatedOutputTokens;
-    if (totalEstimatedTokens > DEMO_LIMITS.tokens.perRequest) {
-      // Truncate document content to fit within limits
-      const maxDocTokens = DEMO_LIMITS.tokens.perRequest - estimatedOutputTokens - estimateTokens(systemPrompt);
-      const truncatedDocs = documents.map((doc: { name: string; content?: string }) => ({
-        ...doc,
-        content: doc.content ? doc.content.slice(0, maxDocTokens * 4 / documents.length) + '... [truncated for demo]' : doc.content,
-      }));
-
-      // Rebuild document context
-      const truncatedContext = truncatedDocs
-        .map((doc: { name: string; content?: string }) => {
-          const content = doc.content || '[Content not available]';
-          return `=== DOCUMENT: ${doc.name} ===\n${content}\n=== END DOCUMENT ===`;
-        })
-        .join('\n\n');
-
-      body.documents = truncatedDocs;
-    }
 
     let questions: CrossExamQuestion[] = [];
     let usedFallback = false;
-    let tokensUsed = 0;
+    let cost = 0;
+    let charsProcessed = 0;
 
     try {
       const response = await chatCompletion(
@@ -399,12 +409,15 @@ Return ONLY a valid JSON array. No markdown formatting.`;
         {
           model: 'casemark/casemark-core-1',
           temperature: 0.7,
-          max_tokens: Math.min(DEMO_LIMITS.tokens.perRequest, 8000),
+          max_tokens: 8000,
         }
       );
 
       const content = response.choices?.[0]?.message?.content || '';
-      tokensUsed = response.usage?.total_tokens || 0;
+
+      // Calculate cost based on character count
+      charsProcessed = (systemPrompt + userPrompt + (content || '')).length;
+      cost = (charsProcessed / 1000) * DEMO_LIMITS.pricing.pricePerThousandChars;
 
       if (content) {
         const questionsData = parseJSONResponse(content);
@@ -440,7 +453,8 @@ Return ONLY a valid JSON array. No markdown formatting.`;
 
     return NextResponse.json({
       questions,
-      tokensUsed,
+      cost, // Cost in dollars
+      charsProcessed,
       usedFallback,
     });
   } catch (error) {

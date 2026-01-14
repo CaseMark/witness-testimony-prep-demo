@@ -40,6 +40,11 @@ import {
   setDepositionQuestions,
   setAnalysisResults,
 } from '@/lib/storage/deposition-storage';
+import {
+  getSessionStats,
+  incrementSessionPrice,
+  formatPrice,
+} from '@/lib/storage/usage-storage';
 import { DEMO_LIMITS } from '@/lib/demo-limits/config';
 import { UsageMeter } from '@/components/demo/UsageMeter';
 import { LimitWarning } from '@/components/demo/LimitWarning';
@@ -85,21 +90,25 @@ export default function DepositionPrepTool() {
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
   const [isOrganizingOutline, setIsOrganizingOutline] = useState(false);
 
-  // Error state
+  // Error and limit state
   const [error, setError] = useState<string | null>(null);
+  const [limitReached, setLimitReached] = useState<'priceLimit' | 'documentLimit' | null>(null);
 
-  // Demo limits state
-  const [limitReached, setLimitReached] = useState<'tokenLimit' | 'ocrLimit' | null>(null);
-  const [tokensUsed, setTokensUsed] = useState(0);
-  const [pagesUsed, setPagesUsed] = useState(0);
+  // Usage tracking
+  const [priceUsed, setPriceUsed] = useState(0);
+  const [documentsUsed, setDocumentsUsed] = useState(0);
 
   // UI state
   const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set());
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [selectedPriority, setSelectedPriority] = useState<string | null>(null);
 
-  // Load session from localStorage on mount
+  // Load session and stats on mount
   useEffect(() => {
+    const stats = getSessionStats();
+    setPriceUsed(stats.sessionPrice);
+    setDocumentsUsed(stats.documentsUploaded);
+
     const savedSessionId = typeof window !== 'undefined'
       ? localStorage.getItem('wtp_current_deposition_session')
       : null;
@@ -160,8 +169,11 @@ export default function DepositionPrepTool() {
     setCaseNumber('');
     setError(null);
     setLimitReached(null);
-    setTokensUsed(0);
-    setPagesUsed(0);
+    // Don't reset priceUsed/documentsUsed - they persist across deposition sessions
+    // Reload from session stats instead
+    const stats = getSessionStats();
+    setPriceUsed(stats.sessionPrice);
+    setDocumentsUsed(stats.documentsUploaded);
     setExpandedQuestions(new Set());
     setSelectedTopic(null);
     setSelectedPriority(null);
@@ -175,9 +187,9 @@ export default function DepositionPrepTool() {
     if (!files || !session) return;
 
     // Check document limit
-    if (session.documents.length >= DEMO_LIMITS.ocr.maxDocumentsPerSession) {
-      setLimitReached('ocrLimit');
-      showError(`Demo limit: Maximum ${DEMO_LIMITS.ocr.maxDocumentsPerSession} documents per session`);
+    if (session.documents.length >= DEMO_LIMITS.documents.maxDocumentsPerSession) {
+      setLimitReached('documentLimit');
+      showError(`Demo limit: Maximum ${DEMO_LIMITS.documents.maxDocumentsPerSession} documents per session`);
       return;
     }
 
@@ -186,14 +198,14 @@ export default function DepositionPrepTool() {
 
     for (const file of Array.from(files)) {
       // Check document limit again for each file
-      if (session.documents.length >= DEMO_LIMITS.ocr.maxDocumentsPerSession) {
-        showError(`Demo limit reached: Maximum ${DEMO_LIMITS.ocr.maxDocumentsPerSession} documents`);
+      if (session.documents.length >= DEMO_LIMITS.documents.maxDocumentsPerSession) {
+        showError(`Demo limit reached: Maximum ${DEMO_LIMITS.documents.maxDocumentsPerSession} documents`);
         break;
       }
 
       // Check file size
-      if (file.size > DEMO_LIMITS.ocr.maxFileSize) {
-        showError(`File "${file.name}" exceeds ${DEMO_LIMITS.ocr.maxFileSize / (1024 * 1024)}MB limit`);
+      if (file.size > DEMO_LIMITS.documents.maxFileSize) {
+        showError(`File "${file.name}" exceeds ${DEMO_LIMITS.documents.maxFileSize / (1024 * 1024)}MB limit`);
         continue;
       }
 
@@ -208,12 +220,6 @@ export default function DepositionPrepTool() {
 
         const docType = detectDocumentType(file.name, content);
         const pageCount = Math.ceil(content.length / 3000);
-
-        // Check page limit
-        if (pagesUsed + pageCount > DEMO_LIMITS.ocr.maxPagesPerDay) {
-          showError(`File "${file.name}" would exceed daily page limit (${DEMO_LIMITS.ocr.maxPagesPerDay} pages)`);
-          continue;
-        }
 
         const newDoc: DepositionDocument = {
           id: uuidv4(),
@@ -232,7 +238,7 @@ export default function DepositionPrepTool() {
 
         const updated = addDepositionDocument(session.id, newDoc);
         if (updated) {
-          setPagesUsed(prev => prev + pageCount);
+          setDocumentsUsed(prev => prev + 1);
           setSession(updated);
         }
       } catch (err) {
@@ -242,7 +248,7 @@ export default function DepositionPrepTool() {
     }
 
     setIsUploadingDocument(false);
-  }, [session, pagesUsed]);
+  }, [session]);
 
   // Generate questions via API
   const generateQuestions = async () => {
@@ -270,53 +276,31 @@ export default function DepositionPrepTool() {
 
       if (!response.ok) {
         if (data.limitReached) {
-          setLimitReached('tokenLimit');
+          setLimitReached('priceLimit');
           return;
         }
         showError(data.error || 'Failed to generate questions');
         return;
       }
 
-      // Track token usage
-      if (data.tokensUsed) {
-        setTokensUsed(prev => prev + data.tokensUsed);
+      // Track cost
+      if (data.cost) {
+        incrementSessionPrice(data.cost);
+        setPriceUsed((prev) => prev + data.cost);
       }
 
-      // Update session with questions
+      // Update session with questions and analysis from API
       const questions: DepositionQuestion[] = data.questions || [];
-      let updated = setDepositionQuestions(session.id, questions);
-
-      // Create mock analysis data
-      const gaps: TestimonyGap[] = [
-        {
-          id: uuidv4(),
-          description: 'Gap in communication timeline identified in uploaded documents',
-          documentReferences: session.documents.map(d => d.name).slice(0, 2),
-          severity: 'moderate',
-          suggestedQuestions: ['What communications occurred during this period?'],
-        },
-      ];
-
-      const contradictions: Contradiction[] = session.documents.length > 1 ? [
-        {
-          id: uuidv4(),
-          description: 'Potential inconsistency between document statements',
-          source1: { document: session.documents[0]?.name || 'Document 1', excerpt: 'Statement from first document' },
-          source2: { document: session.documents[1]?.name || 'Document 2', excerpt: 'Conflicting statement' },
-          severity: 'moderate',
-          suggestedQuestions: ['Can you explain this discrepancy?'],
-        },
-      ] : [];
-
-      const analysis = {
-        keyThemes: ['Timeline', 'Communications', 'Decision Making', 'Document Authenticity'],
-        timelineEvents: [
-          { date: 'TBD', event: 'Key event identified in documents', source: session.documents[0]?.name || 'Documents' },
-        ],
-        witnesses: [session.deponentName],
-        keyExhibits: session.documents.map(d => d.name),
+      const gaps: TestimonyGap[] = data.gaps || [];
+      const contradictions: Contradiction[] = data.contradictions || [];
+      const analysis = data.analysis || {
+        keyThemes: [],
+        timelineEvents: [],
+        witnesses: [],
+        keyExhibits: [],
       };
 
+      let updated = setDepositionQuestions(session.id, questions);
       updated = setAnalysisResults(session.id, gaps, contradictions, analysis);
 
       if (updated) {
@@ -781,11 +765,16 @@ export default function DepositionPrepTool() {
         {/* Usage meters */}
         <div className="grid grid-cols-2 gap-4 mb-6">
           <UsageMeter
+            label="Session Cost"
+            used={priceUsed}
+            limit={DEMO_LIMITS.pricing.sessionPriceLimit}
+            isPriceFormat
+          />
+          <UsageMeter
             label="Documents"
             used={session?.documents.length || 0}
-            limit={DEMO_LIMITS.ocr.maxDocumentsPerSession}
+            limit={DEMO_LIMITS.documents.maxDocumentsPerSession}
           />
-          <UsageMeter label="OCR Pages Today" used={pagesUsed} limit={DEMO_LIMITS.ocr.maxPagesPerDay} />
         </div>
 
         {/* Upload area */}
@@ -849,6 +838,34 @@ export default function DepositionPrepTool() {
           </div>
         )}
 
+        {/* Quick navigation if analysis/questions exist */}
+        {(() => {
+          const hasAnalysis = (session?.gaps && session.gaps.length > 0) || (session?.contradictions && session.contradictions.length > 0);
+          const hasQuestions = (session?.questions?.length || 0) > 0;
+          return (hasAnalysis || hasQuestions) ? (
+            <div className="mt-6 flex gap-3">
+              {hasAnalysis && (
+                <button
+                  onClick={() => setCurrentStep('analysis')}
+                  className="flex-1 py-3 px-4 bg-card border-2 border-primary/30 text-foreground rounded-lg font-medium hover:bg-primary/10 hover:border-primary transition flex items-center justify-center gap-2"
+                >
+                  <MagnifyingGlass className="w-5 h-5 text-primary" weight="duotone" />
+                  View Analysis
+                </button>
+              )}
+              {hasQuestions && (
+                <button
+                  onClick={() => setCurrentStep('questions')}
+                  className="flex-1 py-3 px-4 bg-card border-2 border-primary/30 text-foreground rounded-lg font-medium hover:bg-primary/10 hover:border-primary transition flex items-center justify-center gap-2"
+                >
+                  <ChatCircle className="w-5 h-5 text-primary" weight="duotone" />
+                  View Questions
+                </button>
+              )}
+            </div>
+          ) : null;
+        })()}
+
         {/* Tips */}
         <div className="mt-6 bg-primary/10 rounded-lg p-4 border border-primary/20">
           <div className="flex gap-3">
@@ -883,8 +900,8 @@ export default function DepositionPrepTool() {
     <div className="max-w-6xl mx-auto">
       {/* Usage meters */}
       <div className="grid grid-cols-2 gap-4 mb-6">
-        <UsageMeter label="Session Tokens" used={tokensUsed} limit={DEMO_LIMITS.tokens.perSession} />
-        <UsageMeter label="OCR Pages" used={pagesUsed} limit={DEMO_LIMITS.ocr.maxPagesPerDay} />
+        <UsageMeter label="Session Cost" used={priceUsed} limit={DEMO_LIMITS.pricing.sessionPriceLimit} isPriceFormat />
+        <UsageMeter label="Documents" used={session?.documents.length || 0} limit={DEMO_LIMITS.documents.maxDocumentsPerSession} />
       </div>
 
       <div className="flex items-center justify-between mb-6">
@@ -1032,9 +1049,10 @@ export default function DepositionPrepTool() {
   // Render questions step
   const renderQuestions = () => (
     <div className="max-w-6xl mx-auto">
-      {/* Usage meter */}
-      <div className="mb-6">
-        <UsageMeter label="Session Tokens" used={tokensUsed} limit={DEMO_LIMITS.tokens.perSession} />
+      {/* Usage meters */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <UsageMeter label="Session Cost" used={priceUsed} limit={DEMO_LIMITS.pricing.sessionPriceLimit} isPriceFormat />
+        <UsageMeter label="Documents" used={session?.documents.length || 0} limit={DEMO_LIMITS.documents.maxDocumentsPerSession} />
       </div>
 
       <div className="flex items-center justify-between mb-6">
@@ -1286,7 +1304,9 @@ export default function DepositionPrepTool() {
                 const stepIndex = index;
                 const isActive = currentStep === step;
                 const isCompleted = stepIndex < currentIndex;
-                const isAccessible = stepIndex <= currentIndex || (step === 'questions' && session.questions.length > 0) || (step === 'outline' && session.outline);
+                // Analysis is only accessible if gaps/contradictions exist (analysis has been generated)
+                const hasAnalysis = (session.gaps && session.gaps.length > 0) || (session.contradictions && session.contradictions.length > 0);
+                const isAccessible = stepIndex <= currentIndex || (step === 'analysis' && hasAnalysis) || (step === 'questions' && session.questions.length > 0) || (step === 'outline' && session.outline);
 
                 return (
                   <button

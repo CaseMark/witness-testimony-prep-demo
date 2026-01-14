@@ -15,14 +15,16 @@ export default function Page() {
   if (selectedTool === "testimony") {
     return (
       <div className="flex-1 bg-background">
-        <div className="border-b border-border bg-card px-4 py-2">
-          <button
+        <div className="border-b border-border bg-card px-6 py-4">
+          <Button
             onClick={() => setSelectedTool("none")}
-            className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
+            variant="outline"
+            size="lg"
+            className="font-medium"
           >
-            <ArrowRight className="size-4 rotate-180" />
+            <ArrowRight className="size-5 rotate-180" />
             Back to tools
-          </button>
+          </Button>
         </div>
         <TestimonyPrepTool />
       </div>
@@ -32,14 +34,16 @@ export default function Page() {
   if (selectedTool === "deposition") {
     return (
       <div className="flex-1 bg-background">
-        <div className="border-b border-border bg-card px-4 py-2">
-          <button
+        <div className="border-b border-border bg-card px-6 py-4">
+          <Button
             onClick={() => setSelectedTool("none")}
-            className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
+            variant="outline"
+            size="lg"
+            className="font-medium"
           >
-            <ArrowRight className="size-4 rotate-180" />
+            <ArrowRight className="size-5 rotate-180" />
             Back to tools
-          </button>
+          </Button>
         </div>
         <DepositionPrepTool />
       </div>
@@ -76,7 +80,7 @@ export default function Page() {
               className="text-4xl md:text-5xl font-light tracking-tight text-foreground mb-4"
               style={{ fontFamily: "'Spectral', serif" }}
             >
-              Legal Prep Tools
+              Deposition Prep Tools
             </h1>
             <p className="text-muted-foreground text-lg max-w-xl mx-auto">
               AI-powered tools for witness testimony preparation and deposition planning.
@@ -118,8 +122,7 @@ export default function Page() {
                 </ul>
               </div>
             </div>
-            <div className="mt-4 pt-4 border-t border-border flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Ready to use</span>
+            <div className="mt-4 pt-4 border-t border-border flex items-center justify-end">
               <span className="text-primary text-sm font-medium flex items-center gap-1 group-hover:gap-2 transition-all">
                 Start
                 <ArrowRight className="size-4" />
@@ -160,8 +163,7 @@ export default function Page() {
                 </ul>
               </div>
             </div>
-            <div className="mt-4 pt-4 border-t border-border flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Ready to use</span>
+            <div className="mt-4 pt-4 border-t border-border flex items-center justify-end">
               <span className="text-primary text-sm font-medium flex items-center gap-1 group-hover:gap-2 transition-all">
                 Start
                 <ArrowRight className="size-4" />

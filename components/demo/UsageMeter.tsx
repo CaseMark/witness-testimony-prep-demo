@@ -9,6 +9,7 @@ interface UsageMeterProps {
   unit?: string;
   className?: string;
   showPercentage?: boolean;
+  isPriceFormat?: boolean; // New prop to format as price
 }
 
 export function UsageMeter({
@@ -18,6 +19,7 @@ export function UsageMeter({
   unit = '',
   className,
   showPercentage = true,
+  isPriceFormat = false,
 }: UsageMeterProps) {
   const percentage = Math.min(100, (used / limit) * 100);
   const remaining = Math.max(0, limit - used);
@@ -38,6 +40,9 @@ export function UsageMeter({
   };
 
   const formatNumber = (num: number) => {
+    if (isPriceFormat) {
+      return `$${num.toFixed(2)}`;
+    }
     if (num >= 1000) {
       return `${(num / 1000).toFixed(1)}k`;
     }
@@ -49,7 +54,7 @@ export function UsageMeter({
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-foreground">{label}</span>
         <span className={cn('font-mono', getTextColorClass())}>
-          {formatNumber(used)}/{formatNumber(limit)}{unit && ` ${unit}`}
+          {formatNumber(used)}/{formatNumber(limit)}{!isPriceFormat && unit && ` ${unit}`}
           {showPercentage && (
             <span className="ml-1">({percentage.toFixed(0)}%)</span>
           )}
@@ -65,7 +70,7 @@ export function UsageMeter({
         <p className={cn('text-xs', getTextColorClass())}>
           {percentage >= 100
             ? 'Limit reached'
-            : `${formatNumber(remaining)}${unit ? ` ${unit}` : ''} remaining`}
+            : `${formatNumber(remaining)}${!isPriceFormat && unit ? ` ${unit}` : ''} remaining`}
         </p>
       )}
     </div>
@@ -89,21 +94,15 @@ export function UsageStatsCard({ className }: UsageStatsCardProps) {
       <h3 className="text-sm font-medium text-foreground">Usage This Session</h3>
       <div className="space-y-3">
         <UsageMeter
-          label="Token Usage"
+          label="Session Cost"
           used={0}
-          limit={50000}
-          unit="tokens"
-        />
-        <UsageMeter
-          label="OCR Pages"
-          used={0}
-          limit={50}
-          unit="pages"
+          limit={5}
+          isPriceFormat={true}
         />
         <UsageMeter
           label="Documents"
           used={0}
-          limit={5}
+          limit={20}
           unit="docs"
         />
       </div>

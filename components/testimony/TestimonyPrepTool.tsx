@@ -35,12 +35,18 @@ import {
   addPracticeExchange,
   deleteSession,
 } from '@/lib/storage/session-storage';
+import {
+  getSessionStats,
+  incrementSessionPrice,
+  formatPrice,
+} from '@/lib/storage/usage-storage';
 import type {
   PracticeSession,
   Document,
   CrossExamQuestion,
   AIExaminerResponse,
 } from '@/lib/types/testimony';
+import { processDocument } from '@/lib/document-processor';
 
 type AppStep = 'setup' | 'documents' | 'questions' | 'practice' | 'review';
 
@@ -61,11 +67,11 @@ export default function TestimonyPrepTool() {
 
   // Error and limit state
   const [error, setError] = useState<string | null>(null);
-  const [limitReached, setLimitReached] = useState<'tokenLimit' | 'ocrLimit' | null>(null);
+  const [limitReached, setLimitReached] = useState<'priceLimit' | 'documentLimit' | null>(null);
 
   // Usage tracking
-  const [tokensUsed, setTokensUsed] = useState(0);
-  const [pagesUsed, setPagesUsed] = useState(0);
+  const [priceUsed, setPriceUsed] = useState(0);
+  const [documentsUsed, setDocumentsUsed] = useState(0);
 
   // Practice state
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -78,6 +84,13 @@ export default function TestimonyPrepTool() {
   const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
   const [questionStartTime, setQuestionStartTime] = useState<Date | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+
+  // Load session stats on mount
+  useEffect(() => {
+    const stats = getSessionStats();
+    setPriceUsed(stats.sessionPrice);
+    setDocumentsUsed(stats.documentsUploaded);
+  }, []);
 
   // Timer effect
   useEffect(() => {
@@ -117,8 +130,11 @@ export default function TestimonyPrepTool() {
     setShowFeedback(false);
     setError(null);
     setLimitReached(null);
-    setTokensUsed(0);
-    setPagesUsed(0);
+    // Don't reset priceUsed/documentsUsed - they persist across testimony sessions
+    // Reload from session stats instead
+    const stats = getSessionStats();
+    setPriceUsed(stats.sessionPrice);
+    setDocumentsUsed(stats.documentsUploaded);
   }, [session]);
 
   // Create session
@@ -146,8 +162,8 @@ export default function TestimonyPrepTool() {
       if (!files || !session) return;
 
       // Check document limit
-      if (session.documents.length >= DEMO_LIMITS.ocr.maxDocumentsPerSession) {
-        setLimitReached('ocrLimit');
+      if (session.documents.length >= DEMO_LIMITS.documents.maxDocumentsPerSession) {
+        setLimitReached('documentLimit');
         return;
       }
 
@@ -156,8 +172,8 @@ export default function TestimonyPrepTool() {
 
       for (const file of Array.from(files)) {
         // Check file size
-        if (file.size > DEMO_LIMITS.ocr.maxFileSize) {
-          showError(`File "${file.name}" exceeds ${DEMO_LIMITS.ocr.maxFileSize / (1024 * 1024)}MB limit`);
+        if (file.size > DEMO_LIMITS.documents.maxFileSize) {
+          showError(`File "${file.name}" exceeds ${DEMO_LIMITS.documents.maxFileSize / (1024 * 1024)}MB limit`);
           continue;
         }
 
@@ -177,41 +193,34 @@ export default function TestimonyPrepTool() {
 
         try {
           let content = '';
+          let pageCount = 1;
 
-          // Handle text files directly
-          if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
-            content = await file.text();
-          } else {
-            // Use OCR API for other files
-            const formData = new FormData();
-            formData.append('file', file);
+          // Extract text using client-side document processor
+          const result = await processDocument(file);
+          content = result.text;
+          pageCount = result.pageCount;
 
-            const response = await fetch('/api/testimony/ocr', {
-              method: 'POST',
-              body: formData,
-            });
+          // Send to server for cost calculation
+          const response = await fetch('/api/testimony/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: content,
+              pageCount,
+              fileName: file.name,
+            }),
+          });
 
-            const data = await response.json();
+          const data = await response.json();
 
-            if (!response.ok) {
-              if (data.limitReached) {
-                setLimitReached('ocrLimit');
-                // Update doc status to error
-                updatedSession = updateSession(session.id, {
-                  documents: session.documents.map((d) =>
-                    d.id === docId ? { ...d, status: 'error' as const } : d
-                  ),
-                });
-                if (updatedSession) setSession(updatedSession);
-                continue;
-              }
-              throw new Error(data.error || 'Failed to process document');
-            }
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to process document');
+          }
 
-            content = data.text || '';
-            if (data.pageCount) {
-              setPagesUsed((prev) => prev + data.pageCount);
-            }
+          // Track cost
+          if (data.cost) {
+            incrementSessionPrice(data.cost);
+            setPriceUsed((prev) => prev + data.cost);
           }
 
           // Update document with content
@@ -225,7 +234,8 @@ export default function TestimonyPrepTool() {
           }
         } catch (err) {
           console.error('Error processing document:', err);
-          showError(`Failed to process "${file.name}". Please try again.`);
+          const errorMessage = err instanceof Error ? err.message : 'Failed to process document';
+          showError(`${file.name}: ${errorMessage}`);
 
           // Update doc status to error
           const currentSession = getSession(session.id);
@@ -269,14 +279,15 @@ export default function TestimonyPrepTool() {
 
       if (!response.ok) {
         if (data.limitReached) {
-          setLimitReached('tokenLimit');
+          setLimitReached('priceLimit');
           return;
         }
         throw new Error(data.error || 'Failed to generate questions');
       }
 
-      if (data.tokensUsed) {
-        setTokensUsed((prev) => prev + data.tokensUsed);
+      if (data.cost) {
+        incrementSessionPrice(data.cost);
+        setPriceUsed((prev) => prev + data.cost);
       }
 
       if (data.questions && data.questions.length > 0) {
@@ -347,14 +358,15 @@ export default function TestimonyPrepTool() {
 
       if (!response.ok) {
         if (data.limitReached) {
-          setLimitReached('tokenLimit');
+          setLimitReached('priceLimit');
           return;
         }
         throw new Error(data.error || 'Failed to analyze response');
       }
 
-      if (data.tokensUsed) {
-        setTokensUsed((prev) => prev + data.tokensUsed);
+      if (data.cost) {
+        incrementSessionPrice(data.cost);
+        setPriceUsed((prev) => prev + data.cost);
       }
 
       // Add practice exchange to session
@@ -527,8 +539,17 @@ export default function TestimonyPrepTool() {
 
       {/* Usage info */}
       <div className="mt-6 space-y-3">
-        <UsageMeter label="Session Tokens" used={tokensUsed} limit={DEMO_LIMITS.tokens.perSession} />
-        <UsageMeter label="OCR Pages" used={pagesUsed} limit={DEMO_LIMITS.ocr.maxPagesPerDay} />
+        <UsageMeter
+          label="Session Cost"
+          used={priceUsed}
+          limit={DEMO_LIMITS.pricing.sessionPriceLimit}
+          isPriceFormat
+        />
+        <UsageMeter
+          label="Documents"
+          used={documentsUsed}
+          limit={DEMO_LIMITS.documents.maxDocumentsPerSession}
+        />
       </div>
     </div>
   );
@@ -702,9 +723,14 @@ export default function TestimonyPrepTool() {
           <UsageMeter
             label="Documents This Session"
             used={session?.documents.length || 0}
-            limit={DEMO_LIMITS.ocr.maxDocumentsPerSession}
+            limit={DEMO_LIMITS.documents.maxDocumentsPerSession}
           />
-          <UsageMeter label="OCR Pages Today" used={pagesUsed} limit={DEMO_LIMITS.ocr.maxPagesPerDay} />
+          <UsageMeter
+            label="Session Cost"
+            used={priceUsed}
+            limit={DEMO_LIMITS.pricing.sessionPriceLimit}
+            isPriceFormat
+          />
         </div>
 
         {/* Tips */}
@@ -986,7 +1012,12 @@ export default function TestimonyPrepTool() {
 
         {/* Usage meter */}
         <div className="mt-6">
-          <UsageMeter label="Session Tokens" used={tokensUsed} limit={DEMO_LIMITS.tokens.perSession} />
+          <UsageMeter
+            label="Session Cost"
+            used={priceUsed}
+            limit={DEMO_LIMITS.pricing.sessionPriceLimit}
+            isPriceFormat
+          />
         </div>
       </div>
     );
